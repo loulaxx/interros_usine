@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Générateur d'interrogations - Flashcards</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<style>
+  body { font-family: Arial, sans-serif; background:#f0f2f5; margin:0; padding:20px; }
+  .card { background:#fff; max-width:650px; margin:auto; padding:25px 30px; border-radius:10px; box-shadow:0 2px 10px rgba(0,0,0,.1); }
+  h1 { font-size:22px; color:#2c3e50; margin-top:0; }
+  label { display:block; margin-top:14px; font-weight:bold; font-size:14px; }
+  input[type=number] { width:100px; padding:6px; border:1px solid #ccc; border-radius:4px; }
+  input[type=text] { padding:6px; border:1px solid #ccc; border-radius:4px; width:200px; }
+  input[type=file] { margin-top:5px; }
+  .ratio { display:flex; align-items:center; gap:8px; }
+  .ratio input { width:60px; }
+  button { margin-top:20px; background:#2c7be5; color:#fff; border:none; padding:12px 22px; font-size:15px; border-radius:5px; cursor:pointer; }
+  button:hover { background:#1a5fc4; }
+  #status { margin-top:14px; font-size:14px; }
+  .err { color:#c0392b; } .ok { color:#27ae60; }
+  footer { text-align:center; margin-top:20px; font-size:12px; color:#888; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Générateur d'interrogations (Flashcards)</h1>
+
+  <label>Paquet principal (deck de la semaine) — CSV :</label>
+  <input type="file" id="mainDeck" accept=".csv">
+
+  <label>Paquets secondaires (semaines précédentes) — CSV (plusieurs possibles) :</label>
+  <input type="file" id="secondaryDecks" accept=".csv" multiple>
+
+  <label>Titre de l'interrogation :</label>
+  <input type="text" id="examTitle" value="Interrogation 1 : L'atome">
+
+  <label>Date affichée :</label>
+  <input type="text" id="examDate" value="12/06/2026">
+
+  <label>Nombre de questions par interrogation :</label>
+  <input type="number" id="numQuestions" value="5" min="1">
+
+  <label>Proportion venant du paquet principal (%) :</label>
+  <div class="ratio"><input type="number" id="mainRatio" value="60" min="0" max="100"> %</div>
+
+  <label>Nombre d'interrogations à générer :</label>
+  <input type="number" id="numExams" value="4" min="1">
+
+  <label>Note totale (sur) :</label>
+  <input type="number" id="totalPoints" value="10" min="1">
+
+  <button onclick="generate()">Générer le PDF</button>
+  <div id="status"></div>
+</div>
+<footer>100% local : aucun fichier n'est envoyé sur un serveur.</footer>
+
+<script>
+function generate() {
+  const status = document.getElementById("status");
+  status.className = ""; status.textContent = "";
+
+  // jsPDF peut mettre un moment à charger depuis le CDN
+  if (!window.jspdf || !window.jspdf.jsPDF) {
+    status.className = "err";
+    status.textContent = "Bibliothèque PDF pas encore chargée, réessayez dans un instant (connexion internet requise au premier chargement).";
+    return;
+  }
+
+  const { jsPDF } = window.jspdf;
+
+  const mainFile = document.getElementById("mainDeck").files[0];
+  const secFiles = document.getElementById("secondaryDecks").files;
+  if (!mainFile) { status.className = "err"; status.textContent = "Veuillez charger un paquet principal."; return; }
+
+  const numQ = +document.getElementById("numQuestions").value;
+  const mainRatio = +document.getElementById("mainRatio").value;
+  const numExams = +document.getElementById("numExams").value;
+  const totalPoints = +document.getElementById("totalPoints").value;
+  const title = document.getElementById("examTitle").value;
+  const date = document.getElementById("examDate").value;
+
+  const read = f => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsText(f); });
+
+  Promise.all([...[mainFile], ...secFiles].map(read)).then(texts => {
+    const main = parseCSV(texts[0]);
+    let secondary = [];
+    for (let i = 1; i < texts.length; i++) secondary.push(...parseCSV(texts[i]));
+
+    if (main.length < 1) { status.className = "err"; status.textContent = "Paquet principal vide ou format invalide."; return; }
+
+    const doc = new jsPDF({ unit: "mm", format: "a4" });
+    const W = 210, H = 297;
+    const margin = 10, gutter = 6;
+    const sheetW = W - 2 * margin;
+    const sheetH = (H - 2 * margin - gutter) / 2;
+
+    for (let e = 0; e < numExams; e++) {
+      if (e > 0 && e % 2 === 0) doc.addPage();
+      const exam = pickExam(main, secondary, numQ, mainRatio);
+      const pos = e % 2 === 0 ? 0 : 1;
+      drawSheet(doc, margin, margin + pos * (sheetH + gutter), sheetW, sheetH,
+                exam, title, date, totalPoints, e + 1);
+    }
+    doc.save("interrogations.pdf");
+    status.className = "ok";
+    status.textContent = "PDF généré : " + numExams + " interrogation(s) (" + Math.ceil(numExams / 2) + " page(s) A4).";
+  });
+}
+
+function parseCSV(text) {
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const cards = [];
+  for (let i = 0; i + 1 < lines.length; i += 2) {
+    const f = lines[i].replace(/^Face\s*1\s*:\s*/i, '').trim();
+    const b = lines[i + 1].replace(/^Face\s*2\s*:\s*/i, '').trim();
+    if (f && b) cards.push({ q: f, a: b });
+  }
+  return cards;
+}
+
+function shuffle(arr) {
+  const a = arr.slice();
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
+
+function pickExam(main, secondary, numQ, mainRatio) {
+  const nMain = Math.min(Math.round(numQ * mainRatio / 100), main.length);
+  const nSec = numQ - nMain;
+  const picked = shuffle(main).slice(0, nMain);
+  if (secondary.length) picked.push(...shuffle(secondary).slice(0, nSec));
+  if (picked.length < numQ) {
+    const used = new Set(picked.map(c => c.q + c.a));
+    for (const c of shuffle(main)) {
+      if (picked.length >= numQ) break;
+      if (!used.has(c.q + c.a)) picked.push(c);
+    }
+  }
+  return shuffle(picked).slice(0, numQ);
+}
+
+function drawSheet(doc, x, y, w, h, exam, title, date, totalPoints, examNum) {
+  const q = exam.length;
+  const pts = Math.floor(totalPoints / q);
+  const remainder = totalPoints - pts * q;
+
+  doc.setDrawColor(180); doc.rect(x, y, w, h);
+  doc.setFont("helvetica", "bold"); doc.setFontSize(11);
+  doc.text("Nom :", x + 8, y + 10);
+  doc.text("Note sur " + totalPoints + " :", x + w - 45, y + 10);
+  doc.text("Prénom :", x + 8, y + 18);
+  doc.setFont("helvetica", "normal");
+  doc.text(date + " - " + title, x + 8, y + 28);
+  doc.line(x + 8, y + 31, x + w - 8, y + 31);
+
+  let cy = y + 42;
+  exam.forEach((c, i) => {
+    const p = i < remainder ? pts + 1 : pts;
+    doc.setFont("helvetica", "normal"); doc.setFontSize(10);
+    const lines = doc.splitTextToSize((i + 1) + ". " + c.q, w - 50);
+    doc.text(lines, x + 8, cy);
+    doc.text("/" + p, x + w - 18, cy);
+    cy += lines.length * 5 + 6;
+  });
+  doc.setFontSize(8); doc.setTextColor(150);
+  doc.text("Exemplaire #" + examNum, x + w - 8, y + h - 4, { align: "right" });
+  doc.setTextColor(0);
+}
+</script>
+</body>
+</html>
