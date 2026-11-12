@@ -15,6 +15,8 @@
   input[type=file] { margin-top:5px; }
   .ratio { display:flex; align-items:center; gap:8px; }
   .ratio input { width:60px; }
+  .radio-group { margin-top:5px; font-weight:normal; font-size:14px; }
+  .radio-group label { display:inline-block; margin-right:15px; font-weight:normal; }
   button { margin-top:20px; background:#2c7be5; color:#fff; border:none; padding:12px 22px; font-size:15px; border-radius:5px; cursor:pointer; }
   button:hover { background:#1a5fc4; }
   #status { margin-top:14px; font-size:14px; }
@@ -38,6 +40,12 @@
   <label>Date affichée :</label>
   <input type="text" id="examDate" value="12/06/2026">
 
+  <label>Face à imprimer :</label>
+  <div class="radio-group">
+    <label><input type="radio" name="faceMode" value="face1" checked> Uniquement la Face 1</label>
+    <label><input type="radio" name="faceMode" value="mixed"> Face 1 ou Face 2 (mélangé)</label>
+  </div>
+
   <label>Nombre de questions par interrogation :</label>
   <input type="number" id="numQuestions" value="5" min="1">
 
@@ -60,7 +68,6 @@ function generate() {
   const status = document.getElementById("status");
   status.className = ""; status.textContent = "";
 
-  // jsPDF peut mettre un moment à charger depuis le CDN
   if (!window.jspdf || !window.jspdf.jsPDF) {
     status.className = "err";
     status.textContent = "Bibliothèque PDF pas encore chargée, réessayez dans un instant (connexion internet requise au premier chargement).";
@@ -79,6 +86,7 @@ function generate() {
   const totalPoints = +document.getElementById("totalPoints").value;
   const title = document.getElementById("examTitle").value;
   const date = document.getElementById("examDate").value;
+  const faceMode = document.querySelector('input[name="faceMode"]:checked').value; // "face1" ou "mixed"
 
   const read = f => new Promise(res => { const r = new FileReader(); r.onload = () => res(r.result); r.readAsText(f); });
 
@@ -97,7 +105,7 @@ function generate() {
 
     for (let e = 0; e < numExams; e++) {
       if (e > 0 && e % 2 === 0) doc.addPage();
-      const exam = pickExam(main, secondary, numQ, mainRatio);
+      const exam = pickExam(main, secondary, numQ, mainRatio, faceMode);
       const pos = e % 2 === 0 ? 0 : 1;
       drawSheet(doc, margin, margin + pos * (sheetH + gutter), sheetW, sheetH,
                 exam, title, date, totalPoints, e + 1);
@@ -108,13 +116,14 @@ function generate() {
   });
 }
 
+// Parse les CSV : lignes alternées question/réponse, on garde les textes tels quels
 function parseCSV(text) {
   const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
   const cards = [];
   for (let i = 0; i + 1 < lines.length; i += 2) {
-    const f = lines[i].replace(/^Face\s*1\s*:\s*/i, '').trim();
-    const b = lines[i + 1].replace(/^Face\s*2\s*:\s*/i, '').trim();
-    if (f && b) cards.push({ q: f, a: b });
+    const face1 = lines[i].trim();
+    const face2 = lines[i + 1].trim();
+    if (face1 && face2) cards.push({ face1, face2 });
   }
   return cards;
 }
@@ -128,19 +137,30 @@ function shuffle(arr) {
   return a;
 }
 
-function pickExam(main, secondary, numQ, mainRatio) {
+// Sélection aléatoire pour UNE interrogation :
+// tirage au sort depuis le principal et les secondaires, sans ordre imposé ensuite.
+// Chaque interrogation tire indépendamment => toutes les feuilles diffèrent.
+function pickExam(main, secondary, numQ, mainRatio, faceMode) {
   const nMain = Math.min(Math.round(numQ * mainRatio / 100), main.length);
   const nSec = numQ - nMain;
+
   const picked = shuffle(main).slice(0, nMain);
   if (secondary.length) picked.push(...shuffle(secondary).slice(0, nSec));
+
+  // Complète avec le paquet principal si les secondaires manquent
   if (picked.length < numQ) {
-    const used = new Set(picked.map(c => c.q + c.a));
+    const used = new Set(picked.map(c => c.face1 + c.face2));
     for (const c of shuffle(main)) {
       if (picked.length >= numQ) break;
-      if (!used.has(c.q + c.a)) picked.push(c);
+      if (!used.has(c.face1 + c.face2)) picked.push(c);
     }
   }
-  return shuffle(picked).slice(0, numQ);
+
+  // Choisit la face à afficher pour chaque question tirée
+  return picked.slice(0, numQ).map(card => {
+    if (faceMode === "face1") return card.face1;
+    return Math.random() < 0.5 ? card.face1 : card.face2;
+  });
 }
 
 function drawSheet(doc, x, y, w, h, exam, title, date, totalPoints, examNum) {
@@ -158,10 +178,10 @@ function drawSheet(doc, x, y, w, h, exam, title, date, totalPoints, examNum) {
   doc.line(x + 8, y + 31, x + w - 8, y + 31);
 
   let cy = y + 42;
-  exam.forEach((c, i) => {
+  exam.forEach((questionText, i) => {
     const p = i < remainder ? pts + 1 : pts;
     doc.setFont("helvetica", "normal"); doc.setFontSize(10);
-    const lines = doc.splitTextToSize((i + 1) + ". " + c.q, w - 50);
+    const lines = doc.splitTextToSize((i + 1) + ". " + questionText, w - 50);
     doc.text(lines, x + 8, cy);
     doc.text("/" + p, x + w - 18, cy);
     cy += lines.length * 5 + 6;
